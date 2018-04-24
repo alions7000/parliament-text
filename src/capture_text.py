@@ -44,7 +44,7 @@ class Downloader(object):
             if not self.page_not_found(self.browser):
                 # handle the top-level Publications page. Firstly, take any oral
                 # evidence links seen on the first Publications page.
-                self.grab_all_oral_evidence_urls()
+                self.process_all_oral_evidence_urls()
                 # next, if there's a drop-down instead, iterate through the options
                 # to take any oral evidence links that are available there
                 try:
@@ -70,7 +70,7 @@ class Downloader(object):
                     logger.info('no publications drop-down processed')
         else:
             logger.warning(
-                "No Publications for this committee: " + committee_url)
+                "No Top-Level Publications Link for this committee: " + committee_url)
 
         # No, sometimes there's no Inquiries selection, but we go straight to Publications http://www.parliament.uk/business/committees/committees-a-z/commons-select/armed-forces-bill-committee-2015/
 
@@ -123,7 +123,9 @@ class Downloader(object):
                                '//div[@class="a-to-z-listing"]/ul[@class="square-bullets-a-to-z"]/li/h3/a')]
 
         logger.info("Found %i inquiries" % len(urls))
-        for url in urls:
+        for i, url in enumerate(urls):
+            # print(i)
+            # if i >=46:
             self.process_inquiry(browser, url)
             # self.browser.get(home_url)
         # self.browser.get(inquiries_url)      # go back to the Inquiries front page, ready to choose a new filter optio
@@ -165,10 +167,10 @@ class Downloader(object):
             # no problem if there isn't a 'publications type' filter for this inquiry's publications:
             # we just continue to take a the full unfiltered list
             pass
-        self.grab_all_oral_evidence_urls()
+        self.process_all_oral_evidence_urls()
         pass
 
-    def grab_all_oral_evidence_urls(self):
+    def process_all_oral_evidence_urls(self):
         # # try a verbose approach instead of list comprehension to avoid StaleElementReferenceException
         stale_error = False
         for x in range(0, 10):
@@ -191,9 +193,9 @@ class Downloader(object):
 
         for u in oral_urls:
             f = u.split('/')[-1]
-            self.download_page(u, f)
+            self.download_and_process_document(u, f)
 
-    def download_page(self, url, filename):
+    def download_and_process_document(self, url, filename):
         logger.info("Document: " + url)
         retries = 0
         success = False
@@ -201,14 +203,14 @@ class Downloader(object):
         while (not success) and (retries <= 10):
             try:
                 r = requests.get(url, timeout=20)
-                urls_dict = {'url_index': self.browser.current_url, 'url_link': url}
+                source_document_locations = {'url_index': self.browser.current_url, 'url_link': url}
                 if filetype == 'html':
                     with open(os.path.join(self.storage_path, filename),'w') as f:
                         html_text = r.content.decode('utf-8')
                         f.write(html_text)  # address an apparent problem with encoding on the Parliament html pages
 
-                    current_transcript = transcript(html_text, urls_dict, filename)
-                    current_transcript.process_and_save()
+                    current_transcript = transcript(html_text, source_document_locations, filename)
+                    current_transcript.process_raw_html(parse_to_json=False)
                 elif filetype == 'pdf':
                     with open(os.path.join(self.storage_path, filename), 'wb') as f:
                         f.write(r.content)

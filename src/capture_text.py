@@ -57,7 +57,7 @@ class Downloader(object):
         if len(pubs_links) > 0 and committee_url in pubs_links[0].get_attribute(
                 'href'):
             publications_url = pubs_links[0].get_attribute('href')
-            self.crawl_publications_section(self.browser, publications_url)
+            self.crawl_publications_section(publications_url)
         else:
             logger.warning(
                 "No Top-Level Publications Link for this committee: "
@@ -70,7 +70,7 @@ class Downloader(object):
             0].get_attribute('href'):
             inquiries_url = inquiries_links[0].get_attribute('href')
             logger.info("Processing all inquiries: " + inquiries_url)
-            self.crawl_inquiries_section(self.browser, inquiries_url)
+            self.crawl_inquiries_section(inquiries_url)
         else:
             logger.warning("No Inquiries for this committee: " + committee_url)
 
@@ -251,7 +251,7 @@ class Downloader(object):
                 r = requests.get(url, timeout=20)
                 source_document_locations = {'url_index':
                                                  self.browser.current_url,
-                                             'url_link': url}
+                                             'url_document': url}
                 if filetype == 'html':
                     with open(os.path.join(self.storage_path,
                                            filename),'w') as f:

@@ -16,10 +16,13 @@ nlp = spacy.load('en_core_web_sm')
 class transcript(object):
     """Represent data in a parliamentary committee transcript"""
 
-    def __init__(self, transcript_text, source_document_locations, filename):
+    def __init__(self, transcript_text,
+                 source_document_locations, html_filename):
+        # initialisation includes the internet location of
+        # the source document, and its index page
         self.raw_html = transcript_text
-        self.transcript_data = source_document_locations # initialise the main dict with just the internet location of the underlying document
-        self.html_filename = filename
+        self.transcript_data = source_document_locations
+        self.html_filename = html_filename
         self.storage_path = args.storage
 
 
@@ -56,127 +59,47 @@ class transcript(object):
                     Q&A
         """
 
-        # firstly, split the document into header material and the main question-answer section.
+        header_text, panels_sections = parse_sections(self.plain_text)
 
-        all_questions_lines = ''
-        # Identify the main Q&A section. Prefer the header 'Examination of Witness(es)'
-        #   but sometimes we only have header 'Questions 111 - 222'. We don't prefer this
-        #   pattern, however, as it sometimes occurs in the middle of the header section,
-        #   prior to the header list of witnesses
-
-        # first attempt to split: expect 'examination of witness(es)' at the top of the document.
-        #TODO: this assumes that all panels will be preceded by another 'examination of witnesses' heading - this might not be the case.
-        #TODO ...consider using same approach as Step 2, but delete any blocks with too few characters.
-        panels_sections = re.split('(?:^\s*\**(?:examination of witness).*\n)+',
-                                   self.plain_text, flags=re.IGNORECASE+re.MULTILINE)
-        # second attempt to split: split whenever we have a 'questions' or 'examinations' header. works well, with flexibility,  with multiple panels
-        if len(panels_sections)==1 or len(panels_sections[0]) > 3000:
-            panels_sections = re.split('(?:^\s*\**(?:questions \[?\d+|examination of witness).*\n)+',
-                                       self.plain_text, flags=re.IGNORECASE+re.MULTILINE)
-        # third attempt: apparently there's no proper headers, so we just split where the Chair introduces the meeting.
-        if len(panels_sections)==1 or len(panels_sections[0]) > 3000:
-            panels_sections = re.split(r'(?:^\s*\**(?:Q\s?\d+|Chair))',
-                                       self.plain_text, flags=re.MULTILINE, maxsplit=1)
-            if len(panels_sections) > 1:
-                panels_sections[1] = r'**Chair' + panels_sections[1]        # reinstate the 'Chair' word that we removed with re.split
-
-        header_text = panels_sections[0]
-        # Remove the notes on 'Use of the Transcript' which occasionally appear after the introductory witnesses list
-        # (with a negative-lookahead check to make sure that the witnesses list doesn't in fact appear after the 'Use' notes)
-        # (example: see 78101.html)
-        header_text = re.sub('use of the transcript(?!.*(\nwitness|gave evidence).*).*',
-                             '',header_text, flags=re.IGNORECASE + re.DOTALL)
-        search_written_evidence = re.search('^Written evidence.*',
-                                            header_text, flags=re.MULTILINE)
-        if search_written_evidence:
-            logger.info("""written evidence is mostly harmless, 
-                        it gets ignored when we extract 
-                        "Witnesses:" lists of speakers'""")
-
-
-        for panel_text in panels_sections[1:]:
-            # for each panel section, split the text into (i) Witnesses list; and
-            # (ii) Q&A paragraphs.
-            # Two patterns: one where the witnesses list begins with 'Witnesses: ...',
-            # the second where it just comprises all of the text that happens
-            # before the first question 'Q'.
-            witness_line = None
-            split_witnesses_and_questions_1 = re.search(r'(witness(?:es)?:.*\n|.*gave evidence\.{,4})([\s\S]*)',
-                                                        panel_text, flags=re.IGNORECASE+re.MULTILINE) # second group captures the whole Q&A text: \s\S means any chracter, including newline, this approach required so we can use re.MULTILINE. Works better than re.DOTALL here, because we have to use re.MULTILINE here.
-            split_witnesses_and_questions_2 = re.search(r'(.*\n)((?:\**Chair|\**Q\s?\d+)[\s\S]*)',
-                                                        panel_text, flags=re.IGNORECASE + re.MULTILINE) # first group captures the (unlabelled) witnesses line, second group captures the whole Q&A text, which is expected to either begin with the Chair's introduction, or the first Question
-            if split_witnesses_and_questions_1 and split_witnesses_and_questions_1.span()[0]<200:
-                # (Additional check for location of the pattern in the panel_text:
-                # Ignore 'witnesses' and 'gave evidence' as markers if they appear beyond the first couple of lines of text
-                witness_line = split_witnesses_and_questions_1.groups()[0]
-                all_questions_lines = all_questions_lines + \
-                                      split_witnesses_and_questions_1.groups()[1] + '\n'
-            elif split_witnesses_and_questions_2:
-                # there are no witness lines that begin with 'Witnesses' so we just assume the first line is the witnesses list
-                witness_line = 'Witnesses without a heading: ' + \
-                               split_witnesses_and_questions_2.groups()[0]
-                all_questions_lines = all_questions_lines + \
-                                      split_witnesses_and_questions_2.groups()[1] + '\n'
+        all_qna_text = ''
+        for panel_text in panels_sections:
+            witness_line, panel_qna_text = parse_panel(panel_text)
+            if panel_qna_text:
+                all_qna_text = all_qna_text + panel_qna_text + '\n'
             if witness_line:
+                # append the witnesses line to the transcript's header text
                 header_text = header_text + '\n' + witness_line
 
+        # Now that we have completed our header_text and the combined
+        # Q&A text, based on all the panels sections, we can parse these two
+        # main sources:-
+        parse_header(self.transcript_data, header_text)
 
-        extract_metadata_from_header_lines(self.transcript_data, header_text)
-
-        # Q&A section handling follows
-        # wherever **bold** text appears (possibly _**bolditalic**_, this is
-        #   deemed to be a 'new speaker'.
-        # Here, any new line starting with **bold** text, or a (non-bold)
-        #   'Q' question number is labelled as representing a new speaker
-        text_with_breaks = re.sub(r'\n(Q\s?\d+|\_?\*\*)', r'\nNEWSPEAKER\g<1>',
-                                  all_questions_lines.strip())
-        # break the text apart at the parts that we have identified as new speakers
-        questions_sections = re.split('NEWSPEAKER', text_with_breaks)
-
-        all_p=[]
-        for i, p in enumerate(questions_sections):
-            # try to extract a speaker name from the start of the line
-            parts = re.search(r'((?:Q\s?\d+\s?)?\_?\*\*.*\*\*\_?)(.*)',
-                              p, re.DOTALL)
-            if parts:
-                firstpart = re.sub(r'[\_\*:]*', '', parts.groups()[0])  # the stuff before the colon
-                qparts = re.search(r'(Q[\s.]?\d+)(.*)', firstpart)
-                section_info = {'section_id': i,
-                                'spoken_text': parts.groups()[1].strip()}
-                if qparts:
-                    speaker_name = qparts.groups()[1].strip()
-                    section_info['question_number'] =  qparts.groups()[0].strip()
-                else:
-                    speaker_name = firstpart.strip()
-
-                section_info['speaker_string'] = re.sub('\s+', ' ', speaker_name)
-                # speaker_info['speaker_id'] = self.speaker_metadata(speaker_name)['id']
-                all_p.append(section_info)
-
-            else:
-                # if no speaker name extracted, then just take the line as 'unparsed text'
-                all_p.append({'section_id': i, 'unparsed_text': p.strip()})
-
-        all_speakers_names = [p['speaker_string'] for p in all_p
+        qna_list = parse_qna_lines(all_qna_text)
+        all_speakers_names = [p['speaker_string'] for p in qna_list
                               if 'speaker_string' in p]
         self.speakers_dict = self.match_speakers_to_people \
             (all_speakers_names, self.transcript_data['all_people'])
 
-        for s in all_p:
-            # map each speaker in the Q&A section to a unique person identified in the header
+        for s in qna_list:
+            # map each speaker in the Q&A section to a unique best-match person
+            # previously identified from the header
             if 'speaker_string' in s and len(s['speaker_string'])>1:
                 s['speaker'] = self.speakers_dict[s['speaker_string']]
 
-        self.transcript_data['all_sections'] = all_p
+        self.transcript_data['all_sections'] = qna_list
 
-        self.json_text = json.dumps(self.transcript_data, sort_keys=False, indent=4)
+        self.json_text = json.dumps(self.transcript_data,
+                                    sort_keys=False, indent=4)
 
 
     def match_speakers_to_people (self, speakers_names, people):
         #
         speakers_dict = {}
         people_names = [p for p in people]
-        for s in [sn for sn in speakers_names if len(sn)>1]:  # no blanks, no singleton punctuation marks
+        # Iterate through speakers, ignoring blanks, and singleton
+        # punctuation marks
+        for s in [sn for sn in speakers_names if len(sn)>1]:
             if s not in speakers_dict:
                 person_match = process.extractOne(s, people_names,
                                                   score_cutoff=10)
@@ -190,45 +113,126 @@ class transcript(object):
         return speakers_dict
 
 
-    # def speaker_metadata(self, speaker_name):
-    #     # get speaker metadata by matching string speaker_name with speakers
-    #     # identified in the transcript header
-    #     m = {'id': 9999}
-    #     return m
+    def key_data_summary(self):
+        # Abbreviated summary of key data, for XLSX file output
+        members_string = self.transcript_data.get('members_text', 'na') + \
+                         '\n' + '=' * 40 + '\n' + \
+                         re.sub('}, "', '}, \n"', json.dumps(
+                             self.transcript_data.get(
+                                 'members', 'na')))
+        witnesses_string = self.transcript_data.get('witnesses_text', 'na') + \
+                           '\n' + '=' * 40 + '\n' + \
+                           re.sub('}, "', '}, \n"', json.dumps(
+                               self.transcript_data.get(
+                                   'witnesses', 'na')))
+        qna_string = [short_section(s) for s in
+                      self.transcript_data.get('all_sections', 'na')]
+        hyperlink = r'=HYPERLINK("file:' + self.html_filename + '")'
+
+        key_data_dict = {'plain_text': self.plain_text[0:5000],
+                         'members': members_string[0:5000],
+                         'witnesses': witnesses_string[0:5000],
+                         'Q&A': re.sub(r'}, {', '}, \n{', json.dumps(
+                             qna_string))[0:5000],
+                         'speakers_dict': re.sub(r'}, "', '}, \n"', json.dumps(
+                             self.speakers_dict))[0:5000]
+         }
+        return key_data_dict, hyperlink
 
 
-def extract_metadata_from_header_lines(d, header_text):
+def parse_sections(plain_text):
+    # firstly, split the document into header material and
+    # the main question-answer section.
+
+
+    # Identify the main Q&A section.
+    # Prefer the header 'Examination of Witness(es)'
+    #   but sometimes we only have header 'Questions 111 - 222'.
+    # We don't prefer this pattern, however, as it sometimes occurs
+    # in the middle of the header section, prior to the header list
+    # of witnesses
+
+    # first attempt to split: expect 'examination of witness(es)' at
+    # the top of the document.
+    # TODO: this assumes that all panels will be preceded by another 'examination of witnesses' heading - this might not be the case.
+    # TODO ...consider using same approach as Step 2, but delete any blocks with too few characters.
+    panels_sections = re.split('(?:^\s*\**(?:examination of witness).*\n)+',
+                               plain_text,
+                               flags=re.IGNORECASE + re.MULTILINE)
+    # second attempt to split: split whenever we have a 'questions' or
+    # 'examinations' header. works well, with flexibility,
+    # with multiple panels
+    if len(panels_sections) == 1 or len(panels_sections[0]) > 3000:
+        panels_sections = re.split(
+            '(?:^\s*\**(?:questions \[?\d+|examination of witness).*\n)+',
+            plain_text, flags=re.IGNORECASE + re.MULTILINE)
+    # third attempt: apparently there's no proper headers,
+    # so we just split where the Chair introduces the meeting.
+    if len(panels_sections) == 1 or len(panels_sections[0]) > 3000:
+        panels_sections = re.split(r'(?:^\s*\**(?:Q\s?\d+|Chair))',
+                                   plain_text,
+                                   flags=re.MULTILINE, maxsplit=1)
+        if len(panels_sections) > 1:
+            # reinstate the 'Chair' word that we removed with re.split
+            panels_sections[1] = r'**Chair' + panels_sections[1]
+
+    header_text = panels_sections[0]
+    # Remove the notes on 'Use of the Transcript' which occasionally
+    # appear after the introductory witnesses list
+    # (with a negative-lookahead check to make sure that the
+    # witnesses list doesn't in fact appear after the 'Use' notes)
+    # (example: see 78101.html)
+    header_text = re.sub(
+        'use of the transcript(?!.*(\nwitness|gave evidence).*).*',
+        '', header_text, flags=re.IGNORECASE + re.DOTALL)
+    search_written_evidence = re.search('^Written evidence.*',
+                                        header_text, flags=re.MULTILINE)
+    if search_written_evidence:
+        logger.info("written evidence is mostly harmless, " +
+                    "it gets ignored when we extract " +
+                    "'Witnesses:' lists of speakers")
+
+    return header_text, panels_sections
+
+
+def parse_header(trscrpt, header_text):
     # always expect Members to be listed first, before witnesses and others
-    d['full_header_text_unparsed'] = header_text
+    trscrpt['full_header_text_unparsed'] = header_text
 
-    header_text = re.sub(r'\_ \_', '__', header_text)   # fix a limitation in html2text processing where an extra space will be put between patterns if both patterns are individually enclosed in italic (underline) markup
+    # prepare the text: fix a limitation in html2text output where an extra
+    # space will be put between successive formatting marks if both patterns are
+    # individually enclosed in italic (underline) markup
+    header_text = re.sub(r'\_ \_', '__', header_text)
     header_text = re.sub(r'[\_\*]', '', header_text)
 
     try:
-        # members_search = re.search(r'(members present.*?)(questions|examination)', header_text.strip(), re.IGNORECASE + re.DOTALL)
         members_search = re.search(r'(members present[:\s]*.*?\n)',
-                                   header_text.strip(), re.IGNORECASE + re.DOTALL)
+                                   header_text.strip(),
+                                   re.IGNORECASE + re.DOTALL)
         if members_search is None:
-            # Members list does not have a proper 'Members present' label. So just look for the first sentence in the
-            # header which appears to include a '(chair)' in its text
+            # Case where members list does not have a proper
+            # 'Members present' label. So we just look for the first
+            # sentence in the header which appears to include
+            # a '(chair)' in its text, and take this as the Members listing
             members_search = re.search(r'(.*\(chair.*\).*)',
                                        header_text.strip(), re.IGNORECASE)
         members_text = members_search.groups()[0].strip()
-        d['members_text'] = members_text
+        trscrpt['members_text'] = members_text
         other_text = re.sub(members_text, '', header_text)
-        d['members'] = people_from_text(members_text, 'member')
+        trscrpt['members'] = people_from_text(members_text, 'member')
     except:
         logger.warning('FAILED TO PARSE MEMBERS FROM HEADER TEXT')
         other_text = ''
-        d['members'] = {}
+        trscrpt['members'] = {}
 
     try:
-        # To find the witnesses, we simply take all the text after the word 'Witness.*' (and before 'gave evidence'). This may include
+        # To find the witnesses, we simply take all the text after the word
+        # 'Witness.*' (and before 'gave evidence'). This may include
         # several lines of text, including separate witness lists for each panel.
-        # (later we de-duplicate these and remove any newlines between witnesses names)
-        # (alternative approach would be to use findall or finditer to process multiple lines
-        #   each of which begins with witnesss')
-        # witnesses_search = re.search(r'(\nWitness.*)',header_text.strip(), flags=re.DOTALL)
+        # (later we de-duplicate these and remove any newlines between
+        # witnesses names) (alternative approach would be to use findall or
+        # finditer to process multiple lines each of which
+        # begins with witnesss')
         witnesses_search = re.search(r'(\nWitness.*)',
                                      header_text.strip(), flags=re.DOTALL)
         if not witnesses_search:
@@ -240,28 +244,79 @@ def extract_metadata_from_header_lines(d, header_text):
             replace(']', '\\]').\
             replace('(', '\\(').\
             replace(')', '\\)')
-        # remove 'written evidence' section (if any) indicated by a header then a series of hyperlinks
+        # remove 'written evidence' section (if any) indicated by a
+        # header then a series of hyperlinks
+        # strangely cannot use re.IGNORECASE here, it makes the
+        # re.sub work inconsistently?!
         witnesses_text = re.sub('.*(Written evidence|http).*',
-                                '', witnesses_text)  # strangely cannot use re.IGNORECASE here, it makes the re.sub work inconsistently?!
-        other_text = other_text.replace(witnesses_text, '') # use str.replace instead of re.sub which gets confused by parentheses and square brackets in the text
+                                '', witnesses_text)
+        # remove witnesses_text from other_text.
+        # use str.replace instead of re.sub which gets confused by
+        # parentheses and square brackets in the text
+        other_text = other_text.replace(witnesses_text, '')
         # other_text = re.sub(witnesses_text, '', other_text)
-        d['witnesses_text'] = witnesses_text
-        d['header_other_text'] = other_text
+        trscrpt['witnesses_text'] = witnesses_text
+        trscrpt['header_other_text'] = other_text
 
-        d['witnesses'] = people_from_text(witnesses_text, 'witness')
+        trscrpt['witnesses'] = people_from_text(witnesses_text, 'witness')
     except:
         logger.warning('FAILED TO PARSE WITNESSES TEXT FROM HEADER TEXT')
-        d['witnesses'] = {}
+        trscrpt['witnesses'] = {}
 
     # d['all_people'] = d['members'] + d['witnesses']
-    d['all_people'] = {**d['members'], **d['witnesses']}
+    trscrpt['all_people'] = {**trscrpt['members'], **trscrpt['witnesses']}
 
     # create a unique index id for each person identified
-    for i, s in enumerate(d['all_people']):
-        d['all_people'][s]['id'] = i  # a unique index number for each speaker
+    for i, s in enumerate(trscrpt['all_people']):
+        trscrpt['all_people'][s]['id'] = i  # a unique index number for each speaker
     # d['all_people_names'] = [s['name'] for s in d['all_people']]
 
-    return d
+    return trscrpt
+
+def parse_panel(panel_text):
+    #
+
+    # for each panel section, split the text into (i) Witnesses list; and
+    # (ii) Q&A paragraphs.
+    # Two patterns: one where the witnesses list begins
+    # with 'Witnesses: ...', the second where it just comprises
+    # all of the text that happens before the first question 'Q'.
+    witness_line = None
+    panel_qna_text = None
+    find_witnesses_1 = \
+        re.search(
+            r'(witness(?:es)?:.*\n|.*gave evidence\.{,4})([\s\S]*)',
+            panel_text, flags=re.IGNORECASE + re.MULTILINE)
+    # second group captures the whole Q&A text:
+    # \s\S means any chracter, including newline, this approach
+    # required so we can use re.MULTILINE. Works better than
+    # re.DOTALL here, because we have to use re.MULTILINE here.
+    find_witnesses_2 = \
+        re.search(
+            r'(.*\n)((?:\**Chair|\**Q\s?\d+)[\s\S]*)',
+            panel_text, flags=re.IGNORECASE + re.MULTILINE)
+    # first group captures the (unlabelled) witnesses line,
+    # second group captures the whole Q&A text, which is
+    # expected to either begin with the Chair's introduction,
+    # or the first Question
+    if find_witnesses_1 and \
+                    find_witnesses_1.span()[0] < 200:
+        # (Additional check for location of the pattern in the
+        # panel_text: Ignore 'witnesses' and 'gave evidence'
+        # as markers if they appear beyond the first couple of
+        # lines of text
+        witness_line = find_witnesses_1.groups()[0]
+        panel_qna_text = find_witnesses_1.groups()[1] + \
+                       '\n'
+    elif find_witnesses_2:
+        # there are no witness lines that begin with 'Witnesses'
+        # so we just assume the first line is the witnesses list
+        witness_line = 'Witnesses without a heading: ' + \
+                       find_witnesses_2.groups()[0]
+        panel_qna_text = find_witnesses_2.groups()[1] + \
+                       '\n'
+
+    return witness_line, panel_qna_text
 
 
 def people_from_text(names_string, speaker_type):
@@ -274,24 +329,33 @@ def people_from_text(names_string, speaker_type):
             doc = nlp(ng.strip())
             # TODO: consider doing NLP on names word-by-word to avoid bad
             # results with 'David Davies' etc. 41400.html [doc #3]
-            # Instead use SpaCy model core_web_md, this seems to have better NER?
+            # Instead use SpaCy model core_web_md, seems to have better NER?
             if ('PERSON' in [t.ent_type_ for t in doc]
                 or 'Davies' in [t.text for t in doc]) \
-                    and not 'Foundation' in [t.text for t in doc]:  # Elton John Foundation, for example
+                    and not 'Foundation' in [t.text for t in doc]:
+                # Does ng appear to be a name? Use NER 'PERSON', with
+                # fix for ignore designations which include a person's name
+                # (e.g. 'Director, Elton John Foundation') and manual fix
+                # for SpaCy failure to identify 'Davies'
                 if len(name_extracted)>0:
-                    # we have found a new name, so we store the previous name and its designation information
-                    # join the tokens that form the name, and remove any roman numerals at the start
+                    # we have found a new name, so we store the
+                    # previous name and its designation information
+                    # join the tokens that form the name, and remove
+                    # any roman numerals at the start
                     append_person_name (name_extracted, designation_extracted,
                                         speaker_type, people)
                 name_extracted = []
                 designation_extracted = []
                 for token in doc:
                     if token.pos_ == 'PROPN' or token.ent_type_ == 'PERSON' \
-                            or token.text == 'Davies':       # includes honorifics via PROPN, and certain people's names that don't get parsed as PROPN but do get tagged as PERSON (e.g. Davies (!))
+                            or token.text == 'Davies':
+                        # includes honorifics via PROPN, and certain people's
+                        # names that don't get parsed as PROPN but do get
+                        # tagged as PERSON (e.g. Davies (!))
                         name_extracted.append(token.text)
             else:
-                # 'designation' is just everything apart from the
-                #   honorifics+names, that is, position, affiliation, etc.
+                # we have established the ng is not a name, so we treat it
+                # as a 'designation': position, affiliation, etc.
                 designation_extracted.append(ng.strip())
     if len(name_extracted) > 0:
         # store the final name
@@ -315,7 +379,53 @@ def people_from_text(names_string, speaker_type):
     return people_deduplicated
 
 
-def append_person_name(name_parts, designation_parts, speaker_type, people_list):
+def parse_qna_lines(qna_text):
+    #
+
+    qna_list = []
+    # wherever **bold** text appears (possibly _**bolditalic**_, this is
+    #   deemed to be a 'new speaker'.
+    # Here, any new line starting with **bold** text, or a (non-bold)
+    #   'Q' question number is labelled as representing a new speaker
+    qna_text = re.sub(r'\n(Q\s?\d+|\_?\*\*)', r'\nNEWSPEAKER\g<1>',
+                      qna_text.strip())
+    # break the text apart at the parts that we have
+    # identified as new speakers
+    qna_text_list = re.split('NEWSPEAKER', qna_text)
+
+
+    for i, unparsed_text in enumerate(qna_text_list):
+        # try to extract a speaker name from the start of the line
+        name_and_text = re.search(r'((?:Q\s?\d+\s?)?\_?\*\*.*\*\*\_?)(.*)',
+                                  unparsed_text, re.DOTALL)
+        if name_and_text:
+            section_info = {'section_id': i,
+                            'spoken_text': name_and_text.groups()[1].strip()}
+            # name_text: the question number (if any) and speaker name
+            name_text = re.sub(r'[\_\*:]*', '', name_and_text.groups()[0])
+            # attempt to split name_text into question and speaker name
+            q_number_and_name = re.search(r'(Q[\s.]?\d+)(.*)', name_text)
+            if q_number_and_name:
+                speaker_string = q_number_and_name.groups()[1].strip()
+                section_info['question_number'] = \
+                    q_number_and_name.groups()[0].strip()
+            else:
+                speaker_string = name_text.strip()
+
+            section_info['speaker_string'] = \
+                re.sub('\s+', ' ', speaker_string)
+            qna_list.append(section_info)
+
+        else:
+            # if no speaker name extracted,
+            # then just take the line as 'unparsed text'
+            qna_list.append({'section_id': i,
+                             'unparsed_text': unparsed_text.strip()})
+    return qna_list
+
+
+def append_person_name(name_parts, designation_parts,
+                       speaker_type, people_list):
 
     name_string = ' '.join(name_parts)
     # remove any roman numerals indicating the panel number from the start
@@ -327,3 +437,17 @@ def append_person_name(name_parts, designation_parts, speaker_type, people_list)
         'designation': designation_string,
         'speaker_type': speaker_type})
 
+
+
+def short_section(section_data):
+    # Q&A section data, shortened for use in xlsx output
+    # (also removes the detailed speaker dict data)
+    ss = section_data.copy()
+    if 'speaker' in ss:
+        ss['speaker_matched'] = ss['speaker']['person']['name']
+        del ss['speaker']
+    if 'unparsed_text' in ss:
+        ss['unparsed_text'] = ss['unparsed_text'][0:500]
+    else:
+        ss['spoken_text'] = ss['spoken_text'][0:500]
+    return ss

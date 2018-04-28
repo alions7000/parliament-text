@@ -1,11 +1,10 @@
 import re
-import html2text
 import json
 import os
 from fuzzywuzzy import process
 import spacy
 
-from .utils import logger, args
+from .utils import logger, args, html_to_txt
 
 
 # https://spacy.io/usage/models
@@ -15,42 +14,34 @@ nlp = spacy.load('en_core_web_sm')
 
 
 class transcript(object):
+    """Represent data in a parliamentary committee transcript"""
 
     def __init__(self, transcript_text, source_document_locations, filename):
         self.raw_html = transcript_text
         self.transcript_data = source_document_locations # initialise the main dict with just the internet location of the underlying document
-        self.filename = filename
+        self.html_filename = filename
         self.storage_path = args.storage
 
 
     def process_raw_html(self, parse_to_json = True):
-        txt = self.html_to_txt()
-        txt_filename = re.sub('.html', '.txt', self.filename)
+        """Convert HTML to plain text. Option to parse data to JSON file"""
+        self.plain_text = html_to_txt(self.raw_html)
+        txt_filename = re.sub('.html', '.txt', self.html_filename)
         with open(os.path.join(self.storage_path, txt_filename), 'w',
                   encoding='utf-8') as txt_file:
-            txt_file.write(txt)
+            txt_file.write(self.plain_text)
         if parse_to_json:
-            json_text = self.txt_to_json()
-            json_filename = re.sub('.html', '.json', self.filename)
+            self.parse_plain_text()
+            json_filename = re.sub('.html', '.json', self.html_filename)
             with open(os.path.join(self.storage_path, json_filename), 'w',
                       encoding='utf-8') as json_file:
-                json_file.write(json_text)
-
-    def html_to_txt(self):
-        h = html2text.HTML2Text()  # consider using API field 'bodyText' instead?
-        h.body_width=0
-        h.google_doc = True
-        h.ignore_emphasis=False
-        h.ignore_images=True
-        # h.ignore_links = True
-        # h.ignore_emphasis = True
-        self.plain_text = h.handle(self.raw_html)
-        return self.plain_text
+                json_file.write(self.json_text)
 
 
-    def txt_to_json(self):
-        # firstly, split the document into header material and the main question-answer section.
-        """Typical structure:
+    def parse_plain_text(self):
+        """Identify transcript data in the plain_text string
+
+        Typical structure of the document:
                 Title, date, video hyperlink, Members Present
                 All Witnesses for all panels
                 Examination of Witnesses (panel 1)
@@ -63,8 +54,9 @@ class transcript(object):
                 Examination of Witnesses (panel N)
                     List of witnesses
                     Q&A
-
         """
+
+        # firstly, split the document into header material and the main question-answer section.
 
         all_questions_lines = ''
         # Identify the main Q&A section. Prefer the header 'Examination of Witness(es)'
@@ -177,10 +169,8 @@ class transcript(object):
 
         self.transcript_data['all_sections'] = all_p
 
+        self.json_text = json.dumps(self.transcript_data, sort_keys=False, indent=4)
 
-        self.text_as_json = json.dumps(self.transcript_data, sort_keys=False, indent=4)
-
-        return self.text_as_json
 
     def match_speakers_to_people (self, speakers_names, people):
         #
@@ -337,44 +327,3 @@ def append_person_name(name_parts, designation_parts, speaker_type, people_list)
         'designation': designation_string,
         'speaker_type': speaker_type})
 
-
-
-#
-# def analyse_transcript(transcript):
-#     # output key data items from the pre-processed transcript to a xlsx file
-#
-#     my_dict = json.loads(transcript.text_as_json)
-#
-#     witnesses_text = my_dict['witnesses_text']
-#
-#     witnesses_text = re.sub('(Written evidence from|Examination of witness).*', '', witnesses_text, flags=re.DOTALL).strip() # home/ai/projects_data/parliament-text/77427.html
-#     witnesses_text = re.sub('\s+\n', '; ', witnesses_text)  # in case each witness is listed on a separate line
-#
-#     witnesses_names = names_from_list(witnesses_text)
-#
-#     all_witness_names = []
-#     for w in witnesses_names:
-#         doc = nlp(w.strip())
-#         if 'PERSON' in [t.ent_type_ for t in doc]:
-#             name_extracted = []
-#             for token in doc:
-#                 print('%s:  %s; %s %s %s' % (token.text, token.ent_type_, token.pos_, token.tag_, token.dep_))
-#                 if token.pos_ == 'PROPN':
-#                     # any proper name token gets appended. This includes honorifics as well as names.
-#                     name_extracted.append(token.text)
-#             all_witness_names.append(' '.join(name_extracted).strip())
-#     print(all_witness_names)
-#     pass
-#
-#
-#
-# def names_from_list(names_string):
-#     names_groups = re.split(':', names_string)
-#     if len(names_groups)>=2:
-#         names_string = ';'.join(names_groups[1:])
-#
-#     names_groups = re.split('[:;]', names_string)
-#     if len(names_groups)==1:
-#         names_groups = re.split(',', names_string)
-#
-#     return names_groups

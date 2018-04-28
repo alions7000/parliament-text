@@ -3,9 +3,10 @@ import logging
 import time
 import datetime
 import argparse
+import html2text
+
 from os import path
 
-from selenium.common.exceptions import TimeoutException
 
 
 import sys
@@ -56,20 +57,13 @@ logger.info('Arguments:\t\t{0}'.format(' '.join(sys.argv[:])))
 logger.info('=' * 65)
 
 
-def browser_get(browser, url):
-    retries = 0
-    success = False
-    while (not success) and (retries <= 10):
-        try:
-            browser.get(url)
-            success = True
-        except TimeoutException as e:
-            wait = (retries ^ 3) * 20
-            logger.warning(e)
-            logger.info('URL: %s' % url)
-            logger.info('Waiting %s secs and re-trying...' % wait)
-            sleep(wait)
-            retries += 1
-    if retries > 10:
-        logger.error('Download repeatedly failed: %s', url)
-        sys.exit('Download repeatedly failed: %s' % url)
+def html_to_txt(raw_html):
+    h = html2text.HTML2Text()  # consider using API field 'bodyText' instead?
+    h.body_width = 0
+    h.google_doc = True
+    h.ignore_emphasis = False
+    h.ignore_images = True
+    # h.ignore_links = True
+    # h.ignore_emphasis = True
+    plain_text = h.handle(raw_html)
+    return plain_text

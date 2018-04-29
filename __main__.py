@@ -27,10 +27,9 @@ import glob
 import pandas as pd
 import pandas.formats
 import pandas.io.formats.excel
-import json
 
 from src.capture_text import Downloader
-from src.utils import logger, args
+from src.utils import logger
 
 from src.parse_text import transcript
 
@@ -118,11 +117,3 @@ def key_data_to_xlsx(df, xlsx_filename):
 
 if __name__ == '__main__':
     main()
-
-
-
-
-
-
-
-

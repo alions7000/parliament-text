@@ -239,6 +239,7 @@ def parse_header(trscrpt, header_text):
             witnesses_search = re.search(r'(.*gave evidence)', header_text)
 
         witnesses_text = witnesses_search.groups()[0].strip()
+        witnesses_text = re.sub('gave evidence', '', witnesses_text)
         witnesses_text = witnesses_text.\
             replace('[', '\\[').\
             replace(']', '\\]').\

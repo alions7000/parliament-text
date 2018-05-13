@@ -29,10 +29,10 @@ import pandas.formats
 import pandas.io.formats.excel
 
 from src.capture_text import Downloader
-from src.utils import logger
+from src.utils import logger, args
 
 from src.parse_text import transcript
-
+from src.analyse_transcript import analyse_json
 
 
 
@@ -48,14 +48,14 @@ def main():
             downloader.capture_committee_documents(committee_url)
             logger.info('Completed committee %i / %i' % (idx, len(all_committees)))
         pass
-    elif True:
+    elif False:
         # Parse all HTML files, store to JSON, and summarise in XLSX
         html_filenames = glob.glob(os.path.expanduser(
             '~/projects_data/parliament-text/*.html'))
         df = pd.DataFrame(columns=['members','witnesses',
                                             'speakers_dict','Q&A','plain_text'],
                                    index=[])
-        for i, html_filename in enumerate(html_filenames[0:100]):
+        for i, html_filename in enumerate(html_filenames[100:200]):
             with open(html_filename, 'r') as f:
                 html_text = f.read()
             logger.info('%i / %i: %s' % (i, len(html_filenames), html_filename))
@@ -70,13 +70,11 @@ def main():
         xlsx_filename = 'summary.xlsx'
         key_data_to_xlsx(df, xlsx_filename)
 
-    else:
+    elif False:
         # Parse selected files
         key_html_documents = [
-            '9422.html',
-            '38389.html',
-            '3245.html',
-            '8332.html'
+            '45429.html',
+            '74822.html'
             # 'http://data.parliament.uk/writtenevidence/committeeevidence.svc/evidencedocument/treasury-committee/monetary-policy-forward-guidance/oral/3245.html'
         ]
         for d in key_html_documents:
@@ -86,6 +84,55 @@ def main():
 
             trscrpt = transcript(html_text, {'status': 'debugging case'}, html_filename=d)
             trscrpt.process_raw_html()
+    elif False:
+        # analyse JSON documents
+        all_summaries = []
+        json_filenames = glob.glob(os.path.expanduser(
+            '~/projects_data/parliament-text/*.json'))
+        # df_analysis = pd.DataFrame(columns=['members','witnesses',
+        #                                     'speakers_dict','Q&A','plain_text'],
+        #                            index=[])
+        for i, json_filename in enumerate(json_filenames):
+            with open(json_filename, 'r') as f:
+                json_text = f.read()
+            logger.info('%i / %i: %s' % (i, len(json_filenames), json_filename))
+            transcript_summary = analyse_json(json_text)
+            all_summaries.append(transcript_summary)
+            # key_data, hyperlink = trscrpt.key_data_summary()
+            # df.loc[hyperlink] = key_data
+        df_all_speaker_stats = pd.concat(all_summaries, ignore_index=True)
+        speaker_data_to_xlsx(df_all_speaker_stats, 'speaker_summary.xlsx')
+
+    elif True:
+        df_all_speaker_stats = pd.read_excel('speaker_summary.xlsx',
+                                             sheet_name='speaker_stats',
+                                             # skiprows=3,
+                                             header=0
+                                             )
+        df_all_speaker_stats['title'] = df_all_speaker_stats['witness_name'].str.extract('(MP|Professor|Rt Hon|Lord QC|Dr |Brigadier|Commodore|Colonel|General|Marshal|Sir|Reverend|Rev\.|Rt Rev)', expand=False).str.strip()
+        df_all_speaker_stats.loc[df_all_speaker_stats.title.isna(),'title'] ='other'
+        df_all_speaker_stats.title = df_all_speaker_stats.title.str.replace(re.compile('(Rev\.|Rt Rev)'), 'Reverend')
+        df_all_speaker_stats.title = df_all_speaker_stats.title.str.replace(re.compile('(Brigadier|Commodore|Colonel|General|Marshal)'), '[military]')
+        df_all_speaker_stats.title = pd.Categorical(df_all_speaker_stats.title)
+        df_all_speaker_stats.title.value_counts()
+
+        df_speakers_agg = df_all_speaker_stats[['title','gunning_fog']].groupby(['title']).agg(['mean','count']).reset_index()
+        df_speakers_agg.columns = ['_'.join(col).strip() for col in df_speakers_agg.columns.values]
+        df_speakers_agg.to_csv('test.csv')
+
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        ax = sns.barplot(x="syllable_count_mean", y="witness_name_", data=df_speakers_agg[df_speakers_agg['syllable_count_count']>10])
+        fig = ax.get_figure()
+        fig.savefig('./img/barplot.png')
+
+        ax2 = sns.barplot(x="title", y="gunning_fog", data=df_all_speaker_stats)
+        plt.ylim(15, 18)
+        fig = ax2.get_figure()
+        fig.savefig('./img/barplot_fog_by_title.png')
+
+    else:
+        logger.error('No options selected')
 
 
 
@@ -109,6 +156,17 @@ def key_data_to_xlsx(df, xlsx_filename):
     for ii in range(1, n_rows+2):
         debug_sheet.set_row(ii, 300)
     # fix for LibreOffice calc not showing hyperlinks properly: https://stackoverflow.com/questions/32205927/xlsxwriter-and-libreoffice-not-showing-formulas-result
+    writer.save()
+    logger.info('Finished summary output to XLSX: %s' % writer.path)
+
+def speaker_data_to_xlsx(df, xlsx_filename):
+    # save speaker stats to xlsx
+    writer = pd.ExcelWriter(xlsx_filename, engine='xlsxwriter')
+    pandas.io.formats.excel.header_style = None
+    df.to_excel(writer, sheet_name='speaker_stats')
+    debug_sheet = writer.sheets['speaker_stats']
+    debug_sheet.freeze_panes(1,1)
+    debug_sheet.set_column('B:C', 55)
     writer.save()
     logger.info('Finished summary output to XLSX: %s' % writer.path)
 

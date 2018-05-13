@@ -4,13 +4,9 @@ import time
 import datetime
 import argparse
 import html2text
-
+import re
 from os import path
-
-
-
 import sys
-from time import sleep
 
 
 project_dir = path.dirname(path.dirname(__file__))
@@ -66,4 +62,13 @@ def html_to_txt(raw_html):
     # h.ignore_links = True
     # h.ignore_emphasis = True
     plain_text = h.handle(raw_html)
+
+    # plain_text_raw = plain_text
+    # plain_text = plain_text_raw
+    plain_text = re.sub('(\*\*\_?) ', r'\1',
+                           plain_text)  # remove trailing space that typically gets added by html2text at the end of every emphasis pair (not perfect: sometimes it's valid space)
+    # plain_text = re.sub('\_\*\*\_', '', plain_text)  # remove redundant empty italic emphasis tags e.g. 26885.html, Q130
+    plain_text = re.sub('\*\*\_?(\s*)\_?\*\*', r'\1',
+                           plain_text)  # remove redundant empty emphasis e.g. 49412, Q200; 45429.html, Q105 Professor Bell
+
     return plain_text

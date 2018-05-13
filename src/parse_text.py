@@ -36,9 +36,11 @@ class transcript(object):
         if parse_to_json:
             self.parse_plain_text()
             json_filename = re.sub('.html', '.json', self.html_filename)
+            json_text = json.dumps(self.transcript_data,
+                                   sort_keys=False, indent=4)
             with open(os.path.join(self.storage_path, json_filename), 'w',
                       encoding='utf-8') as json_file:
-                json_file.write(self.json_text)
+                json_file.write(json_text)
 
 
     def parse_plain_text(self):
@@ -89,25 +91,40 @@ class transcript(object):
 
         self.transcript_data['all_sections'] = qna_list
 
-        self.json_text = json.dumps(self.transcript_data,
-                                    sort_keys=False, indent=4)
-
 
     def match_speakers_to_people (self, speakers_names, people):
         #
         speakers_dict = {}
+
         people_names = [p for p in people]
+        # create a temporary lookup which adds some simplified variants of names
+        # that we located in the header, this can help the fuzzy match to
+        # accurately find the correct speaker using the short-form names
+        # that are typically used for labelling speakers in the Q&A section
+        #
+        people_variants = {p: p for p in people_names}
+        for p in people_names:
+            people_variants[re.sub('(Rt|Hon|MP)', '', p).strip()] = p
+
+
         # Iterate through speakers, ignoring blanks, and singleton
-        # punctuation marks
+        # punctuation marks. Find the most likely candidate name from the
+        # people_variants dictionary keys, and use its value as the chosen
+        # name from the master 'people' dict
+
         for s in [sn for sn in speakers_names if len(sn)>1]:
             if s not in speakers_dict:
-                person_match = process.extractOne(s, people_names,
-                                                  score_cutoff=10)
+                # Remove the honorific from the Q&A speaker label before
+                # attempting to match, this removes some potential confusion,
+                # leaving just the name itself as the basis of the match
+                ss = re.sub('(Mr|Mrs|Miss|Dr|Professor|Prof)', '', s).strip()
+                person_match = process.extractOne(
+                    ss, [p for p in people_variants], score_cutoff=10)
                 if person_match[1] < 95:
                     logger.warn('low score %i name match: %s chosen for %s' %
                                 (person_match[1], person_match[0], s))
                 speakers_dict[s] = {'label_count': 0,
-                                    'person': people[person_match[0]].copy(),
+                                    'person': people[people_variants[person_match[0]]].copy(),
                                     'fuzzy_match_score': person_match[1]}
             speakers_dict[s]['label_count'] += 1
         return speakers_dict
@@ -321,19 +338,34 @@ def parse_panel(panel_text):
 
 
 def people_from_text(names_string, speaker_type):
-    names_groups = re.split(r'(?:[\n:;,()]+|and)', names_string)
+    name_indicators = ['Lord','Baroness','Viscount','Dame','Mr','Mrs','Sir',
+                  'NEXTNAME'] # don't include Professor here: although it's an honorific, it's also part of many job titles so it can mislead us
+    honorofics_indicators_re = '(' + '|'.join(['Professor'] + name_indicators) + ')' # a regex that we use later for stripping the honorifics from names
+    # valid parts of speech for names: proper nouns, punctuatation
+    # (for double-barelled), adposition (for 'of') and determiner (for 'the')
+    # and verb (for 'Baroness FALL'). Basically we're just trying to exclude
+    # non-proper names
+    # see https://spacy.io/api/annotation
+    valid_pos_for_names = ['PROPN','PUNCT','ADP','DET','VERB']
+    affiliation_and_designation_keywords = ['National','Foundation','Office']
+    names_string = re.sub(';\s+', '; NEXTNAME ', names_string)
+    names_groups = re.split(r'(?:[\n:;,()]+|\sand\s)', names_string)
     people = []
     name_extracted = []
     designation_extracted = []
     for ng in names_groups:
-        if not re.search('(witness|members)',ng.strip(), flags=re.IGNORECASE):
+        ng = re.sub('\.$','',ng.strip())
+        if not re.search('(witness|members)',ng, flags=re.IGNORECASE):
             doc = nlp(ng.strip())
             # TODO: consider doing NLP on names word-by-word to avoid bad
             # results with 'David Davies' etc. 41400.html [doc #3]
             # Instead use SpaCy model core_web_md, seems to have better NER?
-            if ('PERSON' in [t.ent_type_ for t in doc]
-                or 'Davies' in [t.text for t in doc]) \
-                    and not 'Foundation' in [t.text for t in doc]:
+            if ('PERSON' in [t.ent_type_ for t in doc]  # check the individual parts of ng
+                or any([t.text in name_indicators for t in doc])
+                # next we attempt to identify a full name at the start of ng (first name and surname) then decide if it's a PERSON. Sometimes more reliable than checking the individual words
+                or (len(doc.ents)>0 and doc.ents[0].label_ == 'PERSON')) and \
+                all([not (t.text in affiliation_and_designation_keywords) for t in doc]):  # reject any cases with key words indicating affiliations etc. - handles several occasions when SpaCy identifies all parts of an organisation's name as PROPN
+
                 # Does ng appear to be a name? Use NER 'PERSON', with
                 # fix for ignore designations which include a person's name
                 # (e.g. 'Director, Elton John Foundation') and manual fix
@@ -348,11 +380,14 @@ def people_from_text(names_string, speaker_type):
                 name_extracted = []
                 designation_extracted = []
                 for token in doc:
-                    if token.pos_ == 'PROPN' or token.ent_type_ == 'PERSON' \
-                            or token.text == 'Davies':
+                    if (token.pos_ in valid_pos_for_names \
+                            or token.ent_type_ == 'PERSON' \
+                            or token.text in name_indicators) and \
+                        token.text != 'NEXTNAME':
                         # includes honorifics via PROPN, and certain people's
                         # names that don't get parsed as PROPN but do get
-                        # tagged as PERSON (e.g. Davies (!))
+                        # tagged as PERSON (e.g. Davies (!)). Also includes
+                        # 'of' for Lord Levene of Portsoken etc.
                         name_extracted.append(token.text)
             else:
                 # we have established the ng is not a name, so we treat it
@@ -363,21 +398,27 @@ def people_from_text(names_string, speaker_type):
         append_person_name(name_extracted, designation_extracted,
                            speaker_type, people)
 
+
+
     # de-duplicate the people, store as a dictionary with name as key
-    people_deduplicated = {}
+    people_dict = {}
     for p in people:
-        # if p['name'] not in [pd['name'] for pd in people_deduplicated]:
-        #     people_deduplicated.append(p)
-        if p['name'] not in people_deduplicated:
-            people_deduplicated[p['name']] = p
-        if p['designation'].lower().startswith('chair') \
-                and 'Chair' not in people_deduplicated \
+
+        if p['name'] not in [re.sub(honorofics_indicators_re, '', p).strip()
+                             for p in people_dict]:
+            # if the person is not already in people_dict (removing honorifics
+            # from people_dict names so that we don't add their shortened
+            # names as duplicates), we add it
+            people_dict[p['name']] = p
+        if (p['designation'].lower().startswith('chair') \
+            or p['designation'].lower().startswith('the chair')) \
+                and 'Chair' not in people_dict \
                 and speaker_type=='member':
             # a further entry for identifying the Chair of the meeting
             # (only relevant for members, not for witnesses who may be
             # 'Chair' of their own organisations)
-            people_deduplicated['Chair'] = p.copy()
-    return people_deduplicated
+            people_dict['Chair'] = p.copy()
+    return people_dict
 
 
 def parse_qna_lines(qna_text):
@@ -396,8 +437,11 @@ def parse_qna_lines(qna_text):
 
 
     for i, unparsed_text in enumerate(qna_text_list):
-        # try to extract a speaker name from the start of the line
-        name_and_text = re.search(r'((?:Q\s?\d+\s?)?\_?\*\*.*\*\*\_?)(.*)',
+        # try to extract a speaker name (and potentially a question number)
+        # from the start of the line
+        # split the paragraph into the name (includes question number) and
+        # the main text of the question:
+        name_and_text = re.search(r'((?:Q\s?\d+\s?)?\_?\*\*.{,30}\*\*\_?)(.*)',
                                   unparsed_text, re.DOTALL)
         if name_and_text:
             section_info = {'section_id': i,
@@ -413,6 +457,8 @@ def parse_qna_lines(qna_text):
             else:
                 speaker_string = name_text.strip()
 
+            # standarise labelling where the chair is speaking
+            speaker_string = re.sub('The Chairman','Chair', speaker_string)
             section_info['speaker_string'] = \
                 re.sub('\s+', ' ', speaker_string)
             qna_list.append(section_info)
@@ -432,6 +478,7 @@ def append_person_name(name_parts, designation_parts,
     # remove any roman numerals indicating the panel number from the start
     # of the first (witness) name in the list
     name_string = re.sub('^\s?[IV]+\.?\s', '', name_string).strip()
+    name_string = re.sub(' - ', '-', name_string)       # remove spaces either side of hyphens by 'join' above
     designation_string = ', '.join(designation_parts)
     people_list.append({
         'name': name_string,

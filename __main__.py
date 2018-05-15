@@ -38,7 +38,7 @@ from src.analyse_transcript import analyse_json
 
 def main():
 
-    if False:
+    if args.download:
         # Download all files
         downloader = Downloader()
         all_committees = downloader.committees_urls_list()
@@ -48,7 +48,9 @@ def main():
             downloader.capture_committee_documents(committee_url)
             logger.info('Completed committee %i / %i' % (idx, len(all_committees)))
         pass
-    elif False:
+
+
+    if args.parse:
         # Parse all HTML files, store to JSON, and summarise in XLSX
         html_filenames = glob.glob(os.path.expanduser(
             '~/projects_data/parliament-text/*.html'))
@@ -70,7 +72,7 @@ def main():
         xlsx_filename = 'summary.xlsx'
         key_data_to_xlsx(df, xlsx_filename)
 
-    elif False:
+    if False:
         # Parse selected files
         key_html_documents = [
             '45429.html',
@@ -84,8 +86,9 @@ def main():
 
             trscrpt = transcript(html_text, {'status': 'debugging case'}, html_filename=d)
             trscrpt.process_raw_html()
-    elif False:
-        # analyse JSON documents
+
+    if args.diagnostic:
+        # generate diagnostic spreadsheet summarising success of parsing
         all_summaries = []
         json_filenames = glob.glob(os.path.expanduser(
             '~/projects_data/parliament-text/*.json'))
@@ -103,7 +106,8 @@ def main():
         df_all_speaker_stats = pd.concat(all_summaries, ignore_index=True)
         speaker_data_to_xlsx(df_all_speaker_stats, 'speaker_summary.xlsx')
 
-    elif True:
+    elif args.analyse:
+        # a quick chart to show how we might use the data
         df_all_speaker_stats = pd.read_excel('speaker_summary.xlsx',
                                              sheet_name='speaker_stats',
                                              # skiprows=3,

@@ -12,11 +12,14 @@ import sys
 project_dir = path.dirname(path.dirname(__file__))
 parser = argparse.ArgumentParser()
 parser.add_argument('--storage')
+parser.add_argument('--download', action='store_true') # store_true -> default action is false
+parser.add_argument('--parse', action='store_true')
+parser.add_argument('--diagnostic', action='store_true')
+parser.add_argument('--analyse', action='store_true')
 args = parser.parse_args()
 
 
 batch_number = 999
-
 
 """Set up logging
 """

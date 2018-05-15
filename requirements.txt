@@ -1,0 +1,9 @@
+matplotlib==2.2.2
+seaborn==0.8.1
+selenium==3.7.0
+spacy==2.0.10
+fuzzywuzzy==0.16.0
+html2text==2018.1.9
+pandas==0.21.0
+requests==2.14.2
+textstat==0.4.1
